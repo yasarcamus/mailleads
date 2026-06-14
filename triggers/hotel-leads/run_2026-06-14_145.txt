@@ -1,0 +1,6 @@
+Run TouristNetTR Hotel Lead Runner now.
+
+target_count: 145
+max_prospects: 1265
+max_pages_per_site: 8
+triggered_at: 2026-06-14
