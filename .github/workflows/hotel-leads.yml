@@ -43,6 +43,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Materialize uploaded hotel seed payloads
+        run: python scripts/materialize_seed_payloads.py
+
       - name: Run hotel lead crawler
         run: |
           python scripts/hotel_lead_runner.py \
