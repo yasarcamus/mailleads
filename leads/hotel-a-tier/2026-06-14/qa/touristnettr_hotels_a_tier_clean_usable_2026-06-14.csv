@@ -1,0 +1,1 @@
+run_date,lead_id,hotel_name,city,hotel_type_or_segment,website,instagram,phone,verified_email,email_source_url,website_source_url,instagram_source_url,phone_source_url,decision_maker_name,decision_maker_source_url,confidence_score,short_note,reason_for_fit,validation_notes,normalized_domain,normalized_phone,qa_flags,qa_status
