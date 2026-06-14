@@ -1,0 +1,59 @@
+name: TouristNetTR Hotel Lead Runner
+
+on:
+  schedule:
+    # 01:00 UTC = 04:00 Europe/Istanbul
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      target_count:
+        description: "Exact A-tier lead count required for success"
+        required: false
+        default: "145"
+      max_prospects:
+        description: "Maximum prospects to inspect"
+        required: false
+        default: "1000"
+      max_pages_per_site:
+        description: "Maximum internal pages to inspect per hotel website"
+        required: false
+        default: "8"
+
+permissions:
+  contents: write
+
+jobs:
+  run-hotel-leads:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_COUNT: ${{ github.event.inputs.target_count || '145' }}
+      MAX_PROSPECTS: ${{ github.event.inputs.max_prospects || '1000' }}
+      MAX_PAGES_PER_SITE: ${{ github.event.inputs.max_pages_per_site || '8' }}
+      BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run hotel lead crawler
+        run: |
+          python scripts/hotel_lead_runner.py \
+            --target-count "$TARGET_COUNT" \
+            --max-prospects "$MAX_PROSPECTS" \
+            --max-pages-per-site "$MAX_PAGES_PER_SITE"
+
+      - name: Commit generated output
+        run: |
+          git config user.name "hotel-lead-bot"
+          git config user.email "hotel-lead-bot@users.noreply.github.com"
+          git add leads reports
+          git commit -m "Add verified hotel lead output - $(date +%F)" || echo "No generated changes to commit"
+          git push
