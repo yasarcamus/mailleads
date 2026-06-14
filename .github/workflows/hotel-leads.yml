@@ -18,6 +18,9 @@ on:
         description: "Maximum internal pages to inspect per hotel website"
         required: false
         default: "8"
+  push:
+    paths:
+      - "triggers/hotel-leads/**"
 
 permissions:
   contents: write
@@ -27,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TARGET_COUNT: ${{ github.event.inputs.target_count || '145' }}
-      MAX_PROSPECTS: ${{ github.event.inputs.max_prospects || '1000' }}
+      MAX_PROSPECTS: ${{ github.event.inputs.max_prospects || '1265' }}
       MAX_PAGES_PER_SITE: ${{ github.event.inputs.max_pages_per_site || '8' }}
       BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
 
