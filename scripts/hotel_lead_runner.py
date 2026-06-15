@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-TouristNetTR hotel-only A-tier lead crawler.
+TouristNetTR daily hotel lead crawler.
 
-This runner is intentionally conservative:
-- it never guesses emails;
-- it only accepts emails from official/extractable/trusted matching source pages;
-- it requires a phone/WhatsApp source;
-- it deduplicates against previous repository outputs;
-- it commits success files only when the target count is reached.
-
-Seed-first design:
-- Add hotel domains to seeds/hotel_seed_domains.csv.
-- Optional: set BRAVE_SEARCH_API_KEY to expand candidates from seeds/city_queries.csv.
+Production rule after 2026-06-15 change:
+- Target is 10 usable hotel leads per daily run, not 145 perfect A-tier leads.
+- Decision-maker data is optional.
+- Phone/WhatsApp is optional.
+- A lead is approved when it is a real hotel/accommodation business, has a source-valid hotel email, and has a plausible TouristNetTR integration point.
+- No guessed or pattern-generated emails are allowed.
 """
 
 from __future__ import annotations
@@ -32,7 +28,6 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEED_FILE = ROOT / "seeds" / "hotel_seed_domains.csv"
@@ -55,31 +50,42 @@ CSV_COLUMNS = [
     "decision_maker_name",
     "decision_maker_source_url",
     "confidence_score",
+    "action_class",
+    "best_first_contact_channel",
+    "touristnettr_integration_point",
     "short_note",
     "reason_for_fit",
     "validation_notes",
 ]
 
 CONTACT_LINK_KEYWORDS = (
-    "contact", "iletisim", "iletişim", "reservation", "rezervasyon",
-    "booking", "kvkk", "corporate", "kurumsal", "about", "hakkimizda", "hakkımızda",
+    "contact", "iletisim", "iletişim", "reservation", "rezervasyon", "booking",
+    "kvkk", "corporate", "kurumsal", "about", "hakkimizda", "hakkımızda",
+    "sales", "satis", "satış", "front-office", "frontoffice", "guest", "misafir",
 )
 HOTEL_INCLUDE_KEYWORDS = (
     "hotel", "otel", "boutique", "butik", "resort", "thermal", "termal",
-    "spa", "cave", "city", "suites", "inn", "konak", "palace", "beach",
+    "spa", "cave", "city", "suites", "suite", "inn", "konak", "palace", "beach",
+    "apart hotel", "aparthotel", "rooms", "accommodation", "lodging", "guest house",
 )
 STRICT_EXCLUDE_KEYWORDS = (
     "airbnb", "villa", "villas", "emlak", "real estate", "property management",
-    "property manager", "rent a car", "rental car", "transfer", "tour", "tours",
-    "travel agency", "dmc", "restaurant", "restoran", "cafe", "kafe", "exchange",
-    "western union", "phone shop", "dorm", "yurt", "camp", "camping", "hostel",
+    "property manager", "rent a car", "rental car", "travel agency", "dmc",
+    "restaurant", "restoran", "cafe", "kafe", "exchange", "western union",
+    "phone shop", "dorm", "yurt", "camp", "camping", "hostel",
 )
 NOISE_EMAIL_DOMAINS = {
-    "example.com", "domain.com", "sentry.io", "wix.com", "wordpress.com", "cloudflare.com",
-    "google.com", "googlemail.com", "schema.org", "w3.org", "facebook.com", "instagram.com",
-    "booking.com", "tripadvisor.com",
+    "example.com", "domain.com", "sentry.io", "wix.com", "wordpress.com",
+    "cloudflare.com", "google.com", "googlemail.com", "schema.org", "w3.org",
+    "facebook.com", "instagram.com", "booking.com", "tripadvisor.com", "expedia.com",
 }
-COMMON_FREE_EMAIL_DOMAINS = {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yandex.com", "icloud.com"}
+COMMON_FREE_EMAIL_DOMAINS = {
+    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yandex.com", "icloud.com", "live.com"
+}
+TRAVEL_BOOKING_DOMAINS = (
+    "booking.", "tripadvisor.", "expedia.", "agoda.", "hotels.com", "trivago.",
+    "airbnb.", "vrbo.", "etstur.", "tatilsepeti.", "jollytur.",
+)
 
 EMAIL_RE = re.compile(r"(?i)(?<![A-Z0-9._%+-])([A-Z0-9._%+\-]{1,64}@[A-Z0-9.\-]{2,255}\.[A-Z]{2,24})(?![A-Z0-9._%+-])")
 PHONE_RE = re.compile(r"(?x)((?:\+?90|0)?\s*(?:\(?\d{3}\)?[\s.\-]*)\d{3}[\s.\-]*\d{2}[\s.\-]*\d{2})")
@@ -128,6 +134,9 @@ class Lead:
     decision_maker_name: str
     decision_maker_source_url: str
     confidence_score: int
+    action_class: str
+    best_first_contact_channel: str
+    touristnettr_integration_point: str
     short_note: str
     reason_for_fit: str
     validation_notes: str
@@ -197,7 +206,7 @@ def normalize_phone(value: str) -> str:
         return "+9" + digits
     if len(digits) == 10:
         return "+90" + digits
-    return "+" + digits if value.strip().startswith("+") else digits
+    return "+" + digits if (value or "").strip().startswith("+") else digits
 
 
 def normalize_instagram(value: str) -> str:
@@ -271,7 +280,7 @@ def is_noise_email(email: str) -> bool:
     if domain in NOISE_EMAIL_DOMAINS:
         return True
     local = email.split("@", 1)[0]
-    if local in {"example", "test", "yourname", "name", "email"}:
+    if local in {"example", "test", "yourname", "name", "email", "mail"}:
         return True
     if any(email.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
         return True
@@ -279,13 +288,27 @@ def is_noise_email(email: str) -> bool:
 
 
 def looks_like_hotel_fit(prospect: Prospect, page_text: str = "") -> tuple[bool, str]:
-    haystack = norm(" ".join([prospect.hotel_name, prospect.segment, prospect.website, page_text[:3000]]))
-    if any(k in haystack for k in STRICT_EXCLUDE_KEYWORDS):
-        if not any(k in haystack for k in ("hotel", "otel", "resort", "butik", "boutique")):
-            return False, "Excluded by non-hotel keywords."
-    if any(k in haystack for k in HOTEL_INCLUDE_KEYWORDS):
+    haystack = norm(" ".join([prospect.hotel_name, prospect.segment, prospect.website, page_text[:5000]]))
+    has_hotel_signal = any(k in haystack for k in HOTEL_INCLUDE_KEYWORDS)
+    has_strict_exclusion = any(k in haystack for k in STRICT_EXCLUDE_KEYWORDS)
+    if has_strict_exclusion and not has_hotel_signal:
+        return False, "Excluded by non-hotel keywords."
+    if has_hotel_signal:
         return True, "Hotel/accommodation keywords verified."
     return False, "Hotel fit not clear enough."
+
+
+def infer_integration_point(text: str) -> str:
+    hay = norm(text[:5000])
+    if "reservation" in hay or "rezervasyon" in hay or "booking" in hay:
+        return "reservation confirmation / pre-arrival email"
+    if "whatsapp" in hay or "check-in" in hay or "check in" in hay:
+        return "WhatsApp check-in / pre-arrival message"
+    if "reception" in hay or "front office" in hay or "frontoffice" in hay:
+        return "reception QR / front-office guest handoff"
+    if "room" in hay or "oda" in hay or "guest" in hay or "misafir" in hay:
+        return "guest welcome message / room QR"
+    return "reservation email / reception QR"
 
 
 def request_get(session: requests.Session, url: str, timeout: int = 15) -> Optional[requests.Response]:
@@ -381,44 +404,66 @@ def pick_best_email(emails: list[tuple[str, str, str]], official_domain: str) ->
     def email_score(item: tuple[str, str, str]) -> int:
         email, _source_url, kind = item
         local, domain = email.split("@", 1)
+        local = local.lower()
         score = 0
         if registered_domain(domain) == official_reg:
             score += 50
         score += {"cloudflare": 30, "mailto": 25, "html": 15}.get(kind, 0)
-        score += {"sales": 12, "reservation": 12, "reservations": 12, "booking": 10, "info": 9, "contact": 7, "frontoffice": 7, "reception": 7}.get(local.lower(), 0)
+        score += {
+            "sales": 15,
+            "reservation": 15,
+            "reservations": 15,
+            "booking": 12,
+            "info": 10,
+            "contact": 8,
+            "frontoffice": 8,
+            "reception": 8,
+            "guestrelations": 8,
+        }.get(local, 0)
         if domain in COMMON_FREE_EMAIL_DOMAINS:
-            score -= 20
+            score -= 5
         return score
 
     email, url, kind = max(emails, key=email_score)
     note_map = {
-        "cloudflare": "Email decoded from Cloudflare email-protection on official hotel page.",
-        "mailto": "Email extracted from mailto link on official/relevant page.",
-        "html": "Email extracted from official/relevant page HTML/text.",
+        "cloudflare": "Email decoded from Cloudflare email-protection on official/relevant hotel page.",
+        "mailto": "Email extracted from mailto link on official/relevant hotel page.",
+        "html": "Email extracted from official/relevant hotel page HTML/text.",
     }
     return email, url, note_map.get(kind, "Email extracted from source page.")
 
 
 def compute_confidence(prospect: Prospect, contact: ExtractedContact, page_text: str) -> int:
-    score = 50
+    score = 40
     if prospect.website:
         score += 10
     fit, _ = looks_like_hotel_fit(prospect, page_text)
     if fit:
-        score += 15
+        score += 20
     if contact.email and contact.email_source_url:
-        score += 15
+        score += 25
     if contact.phone and contact.phone_source_url:
-        score += 10
+        score += 5
     if contact.email and same_registered_domain(contact.email, prospect.website):
         score += 10
     elif domain_of(contact.email) in COMMON_FREE_EMAIL_DOMAINS:
-        score -= 10
+        score -= 5
     if contact.email_note.startswith("Email decoded"):
         score += 5
     if contact.pages_checked >= 2:
         score += 5
     return min(100, max(0, score))
+
+
+def best_first_contact_channel(contact: ExtractedContact) -> str:
+    local = contact.email.split("@", 1)[0].lower() if contact.email else ""
+    if local in {"sales", "reservation", "reservations", "booking"}:
+        return "email"
+    if contact.email:
+        return "email"
+    if contact.phone:
+        return "phone"
+    return "manual_review"
 
 
 def build_lead_id(prospect: Prospect, email: str) -> str:
@@ -430,7 +475,7 @@ def build_lead_id(prospect: Prospect, email: str) -> str:
 
 
 def infer_segment(prospect: Prospect, text: str) -> str:
-    hay = norm(" ".join([prospect.hotel_name, text[:2000]]))
+    hay = norm(" ".join([prospect.hotel_name, text[:3000]]))
     if "cave" in hay or "mağara" in hay or "magara" in hay:
         return "cave hotel"
     if "thermal" in hay or "termal" in hay:
@@ -441,12 +486,14 @@ def infer_segment(prospect: Prospect, text: str) -> str:
         return "boutique hotel"
     if "beach" in hay or "plaj" in hay:
         return "beach hotel"
+    if "apart" in hay or "suite" in hay:
+        return "apart/suite hotel"
     if "spa" in hay:
         return "spa hotel"
     return "hotel"
 
 
-def inspect_prospect(session: requests.Session, prospect: Prospect, max_pages: int, sleep_seconds: float) -> tuple[Optional[Lead], dict[str, str]]:
+def inspect_prospect(session: requests.Session, prospect: Prospect, max_pages: int, sleep_seconds: float, min_confidence: int) -> tuple[Optional[Lead], dict[str, str]]:
     website = normalize_url(prospect.website)
     if not website:
         return None, {"reason": "missing_website"}
@@ -488,6 +535,7 @@ def inspect_prospect(session: requests.Session, prospect: Prospect, max_pages: i
             instagram = extract_instagram(s)
             if instagram:
                 instagram_source_url = r.url
+        # Email must be found on the official hotel domain. The email itself may be info@, reservations@, or even a free mailbox if it is visibly published by the hotel.
         for email, kind in extract_emails_from_html(r.text, s):
             if registered_domain(domain_of(r.url)) == registered_domain(official_domain):
                 emails.append((email, r.url, kind))
@@ -501,21 +549,35 @@ def inspect_prospect(session: requests.Session, prospect: Prospect, max_pages: i
 
     email, email_url, email_note = pick_best_email(emails, official_domain)
     if not email:
-        return None, {"reason": "no_source_valid_email", "website": website, "pages_checked": str(len(checked_urls))}
+        return None, {"reason": "no_source_valid_hotel_email", "website": website, "pages_checked": str(len(checked_urls))}
 
     phone, phone_url = (phones[0] if phones else ("", ""))
-    if not phone:
-        return None, {"reason": "no_source_valid_phone", "website": website, "pages_checked": str(len(checked_urls))}
-
-    contact = ExtractedContact(email=email, email_source_url=email_url, email_note=email_note, phone=phone, phone_source_url=phone_url, instagram=instagram, instagram_source_url=instagram_source_url, pages_checked=len(checked_urls), checked_urls=checked_urls)
+    contact = ExtractedContact(
+        email=email,
+        email_source_url=email_url,
+        email_note=email_note,
+        phone=phone,
+        phone_source_url=phone_url,
+        instagram=instagram,
+        instagram_source_url=instagram_source_url,
+        pages_checked=len(checked_urls),
+        checked_urls=checked_urls,
+    )
     confidence = compute_confidence(prospect, contact, combined_text)
-    if confidence < 90:
-        return None, {"reason": "confidence_below_90", "confidence": str(confidence), "website": website, "email": email}
+    if confidence < min_confidence:
+        return None, {"reason": "confidence_below_minimum", "confidence": str(confidence), "website": website, "email": email}
 
     run_date = now_istanbul_date()
     lead_id = build_lead_id(prospect, email)
     segment = prospect.segment or infer_segment(prospect, combined_text)
-    validation_notes = "; ".join(x for x in [email_note, f"Checked URLs: {', '.join(checked_urls[:5])}" if checked_urls else "", "No inferred email used."] if x)
+    integration_point = infer_integration_point(combined_text)
+    validation_notes = "; ".join(x for x in [
+        email_note,
+        "Phone optional; not required for daily email-ready lead." if not phone else "Phone found on source page.",
+        f"Checked URLs: {', '.join(checked_urls[:5])}" if checked_urls else "",
+        "Decision maker optional by 2026-06-15 rule change.",
+        "No inferred email used.",
+    ] if x)
     lead = Lead(
         run_date=run_date,
         lead_id=lead_id,
@@ -533,7 +595,10 @@ def inspect_prospect(session: requests.Session, prospect: Prospect, max_pages: i
         decision_maker_name="",
         decision_maker_source_url="",
         confidence_score=confidence,
-        short_note=f"Verified hotel page with source-valid email and phone. Checked {len(checked_urls)} page(s).",
+        action_class="A_APPROVED",
+        best_first_contact_channel=best_first_contact_channel(contact),
+        touristnettr_integration_point=integration_point,
+        short_note=f"Email-ready hotel lead. Source-valid hotel email found; decision-maker not required. Checked {len(checked_urls)} page(s).",
         reason_for_fit=fit_reason,
         validation_notes=validation_notes,
     )
@@ -551,7 +616,14 @@ def load_seed_prospects(seed_file: Path) -> list[Prospect]:
             hotel_name = (row.get("hotel_name") or row.get("name") or domain_of(website)).strip()
             if not website or not hotel_name:
                 continue
-            prospects.append(Prospect(hotel_name=hotel_name, city=(row.get("city") or "").strip(), website=website, segment=(row.get("segment") or row.get("hotel_type_or_segment") or "").strip(), instagram=(row.get("instagram") or "").strip(), source="seed"))
+            prospects.append(Prospect(
+                hotel_name=hotel_name,
+                city=(row.get("city") or "").strip(),
+                website=website,
+                segment=(row.get("segment") or row.get("hotel_type_or_segment") or "").strip(),
+                instagram=(row.get("instagram") or "").strip(),
+                source="seed",
+            ))
     return dedupe_prospects(prospects)
 
 
@@ -572,7 +644,7 @@ def brave_discovery(query_file: Path, max_results_per_query: int) -> list[Prospe
         return []
     prospects: list[Prospect] = []
     session = requests.Session()
-    session.headers.update({"Accept": "application/json", "X-Subscription-Token": token, "User-Agent": "TouristNetTRLeadCrawler/1.0"})
+    session.headers.update({"Accept": "application/json", "X-Subscription-Token": token, "User-Agent": "TouristNetTRLeadCrawler/1.1"})
     with query_file.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -580,7 +652,11 @@ def brave_discovery(query_file: Path, max_results_per_query: int) -> list[Prospe
             if not query:
                 continue
             try:
-                resp = session.get("https://api.search.brave.com/res/v1/web/search", params={"q": query, "count": min(max_results_per_query, 20), "country": "TR"}, timeout=20)
+                resp = session.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    params={"q": query, "count": min(max_results_per_query, 20), "country": "TR"},
+                    timeout=20,
+                )
                 if resp.status_code >= 400:
                     continue
                 data = resp.json()
@@ -592,9 +668,17 @@ def brave_discovery(query_file: Path, max_results_per_query: int) -> list[Prospe
                 if not url:
                     continue
                 domain = domain_of(url)
-                if not domain or any(bad in domain for bad in ("booking.", "tripadvisor.", "expedia.", "agoda.", "hotels.com")):
+                if not domain or any(bad in domain for bad in TRAVEL_BOOKING_DOMAINS):
                     continue
-                prospects.append(Prospect(hotel_name=re.sub(r"\s+\|.*$|\s+-\s+.*$", "", BeautifulSoup(title, "lxml").get_text(" ", strip=True)) or domain, city=(row.get("city") or "").strip(), website=url, segment=(row.get("segment") or "").strip(), source="brave"))
+                clean_title = BeautifulSoup(title, "lxml").get_text(" ", strip=True)
+                clean_title = re.sub(r"\s+\|.*$|\s+-\s+.*$", "", clean_title).strip()
+                prospects.append(Prospect(
+                    hotel_name=clean_title or domain,
+                    city=(row.get("city") or "").strip(),
+                    website=url,
+                    segment=(row.get("segment") or "").strip(),
+                    source="brave",
+                ))
             time.sleep(1)
     return dedupe_prospects(prospects)
 
@@ -616,33 +700,63 @@ def md_escape(value: str) -> str:
     return (value or "").replace("|", "\\|").replace("\n", " ")
 
 
-def write_success_files(leads: list[Lead], stats: dict[str, object], run_date: str) -> tuple[Path, Path]:
-    lead_dir = ROOT / "leads" / "hotel-a-tier" / run_date
-    report_dir = ROOT / "reports" / "hotel-a-tier" / run_date
+def write_output_files(leads: list[Lead], stats: dict[str, object], run_date: str, target_count: int) -> tuple[Path, Path]:
+    lead_dir = ROOT / "leads" / "hotel-daily" / run_date
+    report_dir = ROOT / "reports" / "hotel-daily" / run_date
     lead_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = lead_dir / f"touristnettr_hotels_a_tier_{run_date}.csv"
-    md_path = report_dir / f"touristnettr_hotels_a_tier_{run_date}.md"
+    csv_path = lead_dir / f"today_action_{target_count}.csv"
+    md_path = report_dir / "brief.md"
+
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for lead in leads:
             writer.writerow(lead.to_row())
+
+    reason_counts: Counter = stats.get("reason_counts", Counter())  # type: ignore[assignment]
+    channel_counts = Counter(lead.best_first_contact_channel for lead in leads)
+    city_counts = Counter((lead.city or "unknown") for lead in leads)
+
     with md_path.open("w", encoding="utf-8") as f:
-        f.write(f"# TouristNetTR Verified A-Tier Hotel Leads — {run_date}\n\n")
+        f.write(f"# TouristNetTR Daily Hotel Email Leads — {run_date}\n\n")
         f.write("## Summary\n")
-        f.write(f"- Run date: {run_date}\n")
-        f.write(f"- Total hotel prospects researched: {stats.get('prospects_touched', 0)}\n")
-        f.write(f"- Final A-tier hotel leads committed: {len(leads)}\n")
-        f.write(f"- B-tier / rejected records filtered out: {stats.get('rejected_total', 0)}\n")
+        f.write(f"- Target daily leads: {target_count}\n")
+        f.write(f"- Email-ready hotel leads produced: {len(leads)}\n")
+        f.write(f"- Prospects touched: {stats.get('prospects_touched', 0)}\n")
+        f.write(f"- Seed prospects loaded: {stats.get('seed_count', 0)}\n")
+        f.write(f"- Discovery prospects loaded: {stats.get('discovery_count', 0)}\n")
         f.write(f"- Duplicates skipped: {stats.get('duplicates_skipped', 0)}\n")
-        f.write(f"- Guessed emails rejected: {stats.get('guessed_emails_rejected', 0)}\n")
-        f.write(f"- Final A-tier count: {len(leads)}\n\n")
-        f.write("## Quality Rules Applied\n- Hotel-only scope.\n- Source-valid email required.\n- Phone/WhatsApp source required.\n- No inferred or pattern-generated email addresses.\n- Repository deduplication applied.\n- Confidence score >= 90 required.\n\n")
-        f.write("## Final A-Tier Leads\n\n| hotel_name | city | segment | verified_email | phone | website | confidence_score |\n|---|---|---|---|---|---|---:|\n")
+        f.write(f"- Rejected / blocked records: {stats.get('rejected_total', 0)}\n\n")
+        f.write("## Rule Set\n")
+        f.write("- Decision-maker data is optional.\n")
+        f.write("- Phone/WhatsApp is optional.\n")
+        f.write("- Source-valid hotel email is required.\n")
+        f.write("- General hotel emails such as info@, reservation@, sales@, booking@ and contact@ are accepted when found on a relevant source page.\n")
+        f.write("- No guessed or pattern-generated emails are accepted.\n\n")
+        f.write("## Contact Channel Mix\n")
+        if channel_counts:
+            for channel, count in channel_counts.most_common():
+                f.write(f"- {channel}: {count}\n")
+        else:
+            f.write("- No approved leads.\n")
+        f.write("\n## City Mix\n")
+        if city_counts:
+            for city, count in city_counts.most_common():
+                f.write(f"- {city}: {count}\n")
+        else:
+            f.write("- No approved leads.\n")
+        f.write("\n## Final Leads\n\n")
+        f.write("| hotel_name | city | segment | email | phone | website | score |\n")
+        f.write("|---|---|---|---|---|---|---:|\n")
         for lead in leads:
             f.write(f"| {md_escape(lead.hotel_name)} | {md_escape(lead.city)} | {md_escape(lead.hotel_type_or_segment)} | {md_escape(lead.verified_email)} | {md_escape(lead.phone)} | {md_escape(lead.website)} | {lead.confidence_score} |\n")
-        f.write("\n## Notes\nGenerated by the deterministic GitHub Actions crawler. Every row passed the A-tier validation chain.\n")
+        f.write("\n## Rejection / Blocker Counts\n")
+        if reason_counts:
+            for reason, count in reason_counts.most_common():
+                f.write(f"- {reason}: {count}\n")
+        else:
+            f.write("- No rejection counts.\n")
     return csv_path, md_path
 
 
@@ -659,59 +773,55 @@ def read_lanes(query_file: Path) -> list[str]:
                     lanes.append(f"{city} — {segment}".strip(" —"))
                 elif query:
                     lanes.append(query)
-    return lanes or ["Antalya — resort / beach / boutique", "Istanbul — boutique / city / luxury", "Cappadocia — cave / boutique", "Muğla / Bodrum / Fethiye — resort / boutique", "İzmir / Çeşme / Alaçatı — boutique / resort", "Bursa / Afyon / Denizli — thermal / city"]
+    return lanes or [
+        "Antalya — boutique / beach / resort",
+        "Istanbul — boutique / city",
+        "Cappadocia — cave / boutique",
+        "Muğla / Bodrum / Fethiye — boutique / beach",
+        "İzmir / Çeşme / Alaçatı — boutique / resort",
+    ]
 
 
-def write_failure_report(stats: dict[str, object], run_date: str, target_count: int) -> Path:
+def write_zero_report(stats: dict[str, object], run_date: str, target_count: int) -> Path:
     report_dir = ROOT / "reports" / "failures" / run_date
     report_dir.mkdir(parents=True, exist_ok=True)
-    path = report_dir / f"hotel_a_tier_failure_{run_date}.md"
+    path = report_dir / f"hotel_daily_zero_email_leads_{run_date}.md"
     reason_counts: Counter = stats.get("reason_counts", Counter())  # type: ignore[assignment]
     with path.open("w", encoding="utf-8") as f:
-        f.write(f"# TouristNetTR Hotel A-Tier Lead Production Failure Report — {run_date}\n\n")
-        f.write("## Result\n\n**Status:** FAILED — no production CSV lead file committed.\n\n")
-        f.write(f"The run did **not** produce exactly {target_count} new, verified, sendable A-tier hotel leads. Per protocol, no partial or weak lead file was committed.\n\n")
-        f.write("## Verified A-tier count found\n\n")
-        f.write(f"**{stats.get('accepted_count', 0)} verified A-tier hotel leads found in this run.**\n\n")
-        f.write("## Prospect research coverage attempted\n\n")
+        f.write(f"# TouristNetTR Daily Hotel Lead Run — {run_date}\n\n")
+        f.write("## Result\n\n")
+        f.write("**Status:** No email-ready hotel lead was produced.\n\n")
+        f.write(f"Target was {target_count}, but the relaxed daily chain still found 0 approved source-valid hotel emails.\n\n")
+        f.write("## Coverage\n")
         f.write(f"- Seed prospects loaded: {stats.get('seed_count', 0)}\n")
         f.write(f"- Discovery prospects loaded: {stats.get('discovery_count', 0)}\n")
-        f.write(f"- Unique prospects available: {stats.get('prospect_count', 0)}\n")
         f.write(f"- Prospects touched: {stats.get('prospects_touched', 0)}\n")
         f.write(f"- Pages checked: {stats.get('pages_checked', 0)}\n")
         f.write(f"- Duplicates skipped: {stats.get('duplicates_skipped', 0)}\n\n")
-        f.write("### City / segment lanes configured\n\n")
+        f.write("## Configured lanes\n")
         for lane in stats.get("lanes", []):
             f.write(f"- {lane}\n")
-        f.write("\n### Source families attempted\n\n")
-        for src in stats.get("source_families", []):
-            f.write(f"- {src}\n")
-        f.write("\n## Why 145 could not be reached\n\n")
-        if not stats.get("seed_count") and not stats.get("discovery_count"):
-            f.write("No usable seed domains were available and no search API discovery was configured. Add hotel domains to `seeds/hotel_seed_domains.csv` or configure `BRAVE_SEARCH_API_KEY`.\n\n")
-        else:
-            f.write("The crawler could not complete the full A-tier validation chain at the target count.\n\n")
-        f.write("### Rejection / blocker counts\n\n")
+        f.write("\n## Rejection / blocker counts\n")
         if reason_counts:
             for reason, count in reason_counts.most_common():
                 f.write(f"- {reason}: {count}\n")
         else:
             f.write("- No prospects were processed far enough to produce rejection categories.\n")
-        f.write("\n## What was correctly avoided\n\n- No guessed emails were created.\n- No `info@domain` style fabricated addresses were used.\n- No phone-only or form-only hotels were promoted.\n- No non-hotel categories were mixed in.\n- No weak partial CSV was committed as if it were successful.\n\n")
-        f.write("## Next expansion path\n\n1. Add 500–2000 official hotel domains into `seeds/hotel_seed_domains.csv`.\n2. Prefer city-batch seed pools: Antalya, Cappadocia, Muğla/Bodrum/Fethiye, İstanbul, İzmir/Çeşme/Alaçatı, Bursa/Afyon/Denizli.\n3. Optionally add `BRAVE_SEARCH_API_KEY` as a GitHub Actions secret to enable query-based discovery from `seeds/city_queries.csv`.\n4. Re-run the workflow manually from GitHub Actions.\n\n")
-        f.write("## Final decision\n\n**No production lead CSV committed.**\n")
+        f.write("\n## Fix\n")
+        f.write("Add more official hotel domains to `seeds/hotel_seed_domains.csv` or confirm `BRAVE_SEARCH_API_KEY` is configured.\n")
     return path
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target-count", type=int, default=145)
+    parser.add_argument("--target-count", type=int, default=10)
     parser.add_argument("--seed-file", type=Path, default=DEFAULT_SEED_FILE)
     parser.add_argument("--query-file", type=Path, default=DEFAULT_QUERY_FILE)
-    parser.add_argument("--max-pages-per-site", type=int, default=int(os.getenv("MAX_PAGES_PER_SITE", "8")))
-    parser.add_argument("--sleep-seconds", type=float, default=float(os.getenv("CRAWL_SLEEP_SECONDS", "0.4")))
+    parser.add_argument("--max-pages-per-site", type=int, default=int(os.getenv("MAX_PAGES_PER_SITE", "6")))
+    parser.add_argument("--sleep-seconds", type=float, default=float(os.getenv("CRAWL_SLEEP_SECONDS", "0.25")))
     parser.add_argument("--max-prospects", type=int, default=int(os.getenv("MAX_PROSPECTS", "1000")))
     parser.add_argument("--brave-results-per-query", type=int, default=int(os.getenv("BRAVE_RESULTS_PER_QUERY", "10")))
+    parser.add_argument("--min-confidence", type=int, default=int(os.getenv("MIN_CONFIDENCE", "70")))
     args = parser.parse_args()
 
     run_date = now_istanbul_date()
@@ -735,7 +845,7 @@ def main() -> int:
     suppression = load_suppression_index()
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 TouristNetTRHotelLeadCrawler/1.0 (+https://github.com/yasarcamus/mailleads)",
+        "User-Agent": "Mozilla/5.0 TouristNetTRHotelLeadCrawler/1.1 (+https://github.com/yasarcamus/mailleads)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     })
 
@@ -748,7 +858,7 @@ def main() -> int:
         if len(leads) >= args.target_count:
             break
         stats["prospects_touched"] = int(stats.get("prospects_touched", 0)) + 1
-        lead, detail = inspect_prospect(session, prospect, args.max_pages_per_site, args.sleep_seconds)
+        lead, detail = inspect_prospect(session, prospect, args.max_pages_per_site, args.sleep_seconds, args.min_confidence)
         pages_checked += int(detail.get("pages_checked", "0") or 0)
         if lead is None:
             reason_counts[detail.get("reason", "unknown_reject")] += 1
@@ -758,8 +868,8 @@ def main() -> int:
             duplicates_skipped += 1
             reason_counts["duplicate_previous_output"] += 1
             continue
-        lead_key = (lead.lead_id, norm_email(lead.verified_email), normalize_phone(lead.phone), registered_domain(domain_of(lead.website)))
-        existing_keys = {(x.lead_id, norm_email(x.verified_email), normalize_phone(x.phone), registered_domain(domain_of(x.website))) for x in leads}
+        lead_key = (lead.lead_id, norm_email(lead.verified_email), registered_domain(domain_of(lead.website)))
+        existing_keys = {(x.lead_id, norm_email(x.verified_email), registered_domain(domain_of(x.website))) for x in leads}
         if lead_key in existing_keys:
             duplicates_skipped += 1
             reason_counts["duplicate_current_run"] += 1
@@ -772,12 +882,14 @@ def main() -> int:
     stats["rejected_total"] = sum(reason_counts.values())
     stats["guessed_emails_rejected"] = "all inferred/pattern emails blocked by design"
 
-    if len(leads) == args.target_count:
-        csv_path, md_path = write_success_files(leads, stats, run_date)
+    if leads:
+        csv_path, md_path = write_output_files(leads, stats, run_date, args.target_count)
         print(f"SUCCESS: wrote {csv_path.relative_to(ROOT)} and {md_path.relative_to(ROOT)}")
+        if len(leads) < args.target_count:
+            print(f"WARNING: produced {len(leads)}/{args.target_count}; committed partial daily output instead of failing the run.")
     else:
-        failure_path = write_failure_report(stats, run_date, args.target_count)
-        print(f"FAILURE: wrote {failure_path.relative_to(ROOT)}")
+        failure_path = write_zero_report(stats, run_date, args.target_count)
+        print(f"ZERO_LEADS: wrote {failure_path.relative_to(ROOT)}")
     return 0
 
 
