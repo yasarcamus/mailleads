@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-06-18T22:13:52Z",
+  "input_file": "seeds/domain_email_input.csv",
+  "run_dir": "runs/domain-email/current",
+  "total_input_unique_domains": 208,
+  "processed_total": 208,
+  "remaining_estimate": 0,
+  "done_this_run": 208,
+  "found_this_run": 121,
+  "skipped_resume": 0,
+  "last_domain": "otelonline.net",
+  "last_status": "found"
+}
