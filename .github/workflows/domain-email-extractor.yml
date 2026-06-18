@@ -1,0 +1,93 @@
+name: TouristNetTR Domain Email Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_file:
+        description: "CSV input path"
+        required: true
+        default: "seeds/domain_email_input.csv"
+      run_dir:
+        description: "Stable output/checkpoint dir"
+        required: true
+        default: "runs/domain-email/current"
+      max_pages_per_site:
+        description: "Pages per domain"
+        required: true
+        default: "8"
+      stop_after:
+        description: "Max unprocessed domains this run; 0 = no limit"
+        required: true
+        default: "0"
+      max_runtime_seconds:
+        description: "Clean stop before GitHub timeout; 0 = no limit"
+        required: true
+        default: "19800"
+      fresh:
+        description: "true = clear previous current outputs first"
+        required: true
+        default: "false"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  extract-domain-emails:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          python -m pip install requests beautifulsoup4 lxml
+
+      - name: Run checkpointed extractor
+        id: run_extractor
+        continue-on-error: true
+        run: |
+          FRESH_FLAG=""
+          if [ "${{ github.event.inputs.fresh }}" = "true" ]; then FRESH_FLAG="--fresh"; fi
+          python scripts/domain_email_extractor.py \
+            --input "${{ github.event.inputs.seed_file }}" \
+            --run-dir "${{ github.event.inputs.run_dir }}" \
+            --max-pages-per-site "${{ github.event.inputs.max_pages_per_site }}" \
+            --stop-after "${{ github.event.inputs.stop_after }}" \
+            --max-runtime-seconds "${{ github.event.inputs.max_runtime_seconds }}" \
+            --sleep-seconds 0.4 \
+            $FRESH_FLAG
+
+      - name: Commit checkpoint and partial outputs
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ github.event.inputs.run_dir }}" || true
+          if git diff --cached --quiet; then
+            echo "No extractor output changes to commit."
+          else
+            git commit -m "Save domain email extractor checkpoint/output"
+            git push
+          fi
+
+      - name: Upload extractor artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: domain-email-extractor-output
+          path: |
+            ${{ github.event.inputs.run_dir }}/all_results.csv
+            ${{ github.event.inputs.run_dir }}/emails_found.csv
+            ${{ github.event.inputs.run_dir }}/checkpoint.json
+          if-no-files-found: warn
