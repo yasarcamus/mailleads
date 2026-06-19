@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       seed_file:
-        description: "CSV input path"
+        description: "CSV input path; .gz.b64 is decoded automatically"
         required: true
         default: "seeds/domain_email_input.csv"
       run_dir:
@@ -53,6 +53,19 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           python -m pip install requests beautifulsoup4 lxml
 
+      - name: Prepare seed file
+        id: prepare_seed
+        run: |
+          SEED_FILE="${{ github.event.inputs.seed_file }}"
+          INPUT_PATH="$SEED_FILE"
+          if [[ "$SEED_FILE" == *.gz.b64 ]]; then
+            INPUT_PATH="/tmp/domain_email_seed.csv"
+            base64 -d "$SEED_FILE" | gzip -d > "$INPUT_PATH"
+            echo "Decoded compressed seed to $INPUT_PATH"
+            echo "Decoded seed line count: $(wc -l < "$INPUT_PATH")"
+          fi
+          echo "input_path=$INPUT_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Run checkpointed extractor
         id: run_extractor
         continue-on-error: true
@@ -60,7 +73,7 @@ jobs:
           FRESH_FLAG=""
           if [ "${{ github.event.inputs.fresh }}" = "true" ]; then FRESH_FLAG="--fresh"; fi
           python scripts/domain_email_extractor.py \
-            --input "${{ github.event.inputs.seed_file }}" \
+            --input "${{ steps.prepare_seed.outputs.input_path }}" \
             --run-dir "${{ github.event.inputs.run_dir }}" \
             --max-pages-per-site "${{ github.event.inputs.max_pages_per_site }}" \
             --stop-after "${{ github.event.inputs.stop_after }}" \
