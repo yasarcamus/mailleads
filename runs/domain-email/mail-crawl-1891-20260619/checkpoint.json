@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-06-19T12:35:49Z",
+  "input_file": "/tmp/domain_email_seed.csv",
+  "run_dir": "runs/domain-email/mail-crawl-1891-20260619",
+  "total_input_unique_domains": 1635,
+  "processed_total": 1635,
+  "remaining_estimate": 0,
+  "done_this_run": 1635,
+  "found_this_run": 822,
+  "skipped_resume": 0,
+  "last_domain": "byvip.ru",
+  "last_status": "no_email"
+}
