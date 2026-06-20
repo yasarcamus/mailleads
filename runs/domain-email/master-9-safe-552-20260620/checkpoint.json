@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-06-20T12:10:13Z",
+  "input_file": "seeds/master_9_run_crawler_domainonly_552.csv",
+  "run_dir": "runs/domain-email/master-9-safe-552-20260620",
+  "total_input_unique_domains": 539,
+  "processed_total": 539,
+  "remaining_estimate": 0,
+  "done_this_run": 539,
+  "found_this_run": 229,
+  "skipped_resume": 0,
+  "last_domain": "hotelseyirbeach.com",
+  "last_status": "no_email"
+}
