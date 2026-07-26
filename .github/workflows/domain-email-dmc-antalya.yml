@@ -3,8 +3,8 @@ name: TouristNetTR DMC Domain Email Crawl
 on:
   push:
     paths:
-      - "seeds/touristnettr_dmc_domains_2026-07-26.csv"
-      - "triggers/domain-email-dmc/**"
+      - "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv"
+      - "triggers/domain-email-dmc-clean/**"
   workflow_dispatch:
 
 permissions:
@@ -37,8 +37,8 @@ jobs:
         continue-on-error: true
         run: |
           python scripts/domain_email_extractor.py \
-            --input "seeds/touristnettr_dmc_domains_2026-07-26.csv" \
-            --run-dir "runs/domain-email/dmc-antalya-2026-07-26" \
+            --input "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv" \
+            --run-dir "runs/domain-email/dmc-antalya-clean-2026-07-26" \
             --max-pages-per-site 8 \
             --stop-after 0 \
             --max-runtime-seconds 19800 \
@@ -49,11 +49,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "runs/domain-email/dmc-antalya-2026-07-26" || true
+          git add "runs/domain-email/dmc-antalya-clean-2026-07-26" || true
           if git diff --cached --quiet; then
             echo "No crawler output changes to commit."
           else
-            git commit -m "Add DMC domain crawl results"
+            git commit -m "Add clean DMC domain crawl results"
             git push
           fi
 
@@ -61,9 +61,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: touristnettr-dmc-domain-email-output
+          name: touristnettr-dmc-domain-email-output-clean
           path: |
-            runs/domain-email/dmc-antalya-2026-07-26/all_results.csv
-            runs/domain-email/dmc-antalya-2026-07-26/emails_found.csv
-            runs/domain-email/dmc-antalya-2026-07-26/checkpoint.json
+            runs/domain-email/dmc-antalya-clean-2026-07-26/all_results.csv
+            runs/domain-email/dmc-antalya-clean-2026-07-26/emails_found.csv
+            runs/domain-email/dmc-antalya-clean-2026-07-26/checkpoint.json
           if-no-files-found: warn
