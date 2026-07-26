@@ -1,0 +1,44 @@
+name: TouristNetTR DMC Email Smoke Test
+
+on:
+  push:
+    paths:
+      - "triggers/domain-email-dmc-smoke/**"
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run two-domain smoke test
+        run: |
+          rm -rf runs/domain-email/dmc-smoke
+          python scripts/domain_email_extractor.py \
+            --input seeds/touristnettr_dmc_domains_clean_2026-07-26.csv \
+            --run-dir runs/domain-email/dmc-smoke \
+            --max-pages-per-site 4 \
+            --timeout 10 \
+            --stop-after 2 \
+            --max-runtime-seconds 600 \
+            --sleep-seconds 0.2 \
+            --fresh
+          test -s runs/domain-email/dmc-smoke/all_results.csv
+      - name: Commit smoke output
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add runs/domain-email/dmc-smoke
+          git commit -m "Add DMC email crawler smoke-test output"
+          git pull --rebase origin main
+          git push origin HEAD:main
