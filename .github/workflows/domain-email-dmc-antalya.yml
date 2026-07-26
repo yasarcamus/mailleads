@@ -1,0 +1,69 @@
+name: TouristNetTR DMC Domain Email Crawl
+
+on:
+  push:
+    paths:
+      - "seeds/touristnettr_dmc_domains_2026-07-26.csv"
+      - "triggers/domain-email-dmc/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  crawl-dmc-domains:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          python -m pip install requests beautifulsoup4 lxml
+
+      - name: Crawl DMC domains
+        id: crawl
+        continue-on-error: true
+        run: |
+          python scripts/domain_email_extractor.py \
+            --input "seeds/touristnettr_dmc_domains_2026-07-26.csv" \
+            --run-dir "runs/domain-email/dmc-antalya-2026-07-26" \
+            --max-pages-per-site 8 \
+            --stop-after 0 \
+            --max-runtime-seconds 19800 \
+            --sleep-seconds 0.4
+
+      - name: Commit checkpoint and outputs
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "runs/domain-email/dmc-antalya-2026-07-26" || true
+          if git diff --cached --quiet; then
+            echo "No crawler output changes to commit."
+          else
+            git commit -m "Add DMC domain crawl results"
+            git push
+          fi
+
+      - name: Upload crawler artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: touristnettr-dmc-domain-email-output
+          path: |
+            runs/domain-email/dmc-antalya-2026-07-26/all_results.csv
+            runs/domain-email/dmc-antalya-2026-07-26/emails_found.csv
+            runs/domain-email/dmc-antalya-2026-07-26/checkpoint.json
+          if-no-files-found: warn
