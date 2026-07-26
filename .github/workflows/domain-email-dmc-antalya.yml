@@ -3,7 +3,6 @@ name: TouristNetTR DMC Domain Email Crawl
 on:
   push:
     paths:
-      - "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv"
       - "triggers/domain-email-dmc-clean/**"
   workflow_dispatch:
 
@@ -13,13 +12,20 @@ permissions:
 env:
   PYTHONUNBUFFERED: "1"
 
+concurrency:
+  group: touristnettr-dmc-domain-email-crawl
+  cancel-in-progress: false
+
 jobs:
   crawl-dmc-domains:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,35 +33,56 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate input
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          python -m pip install requests beautifulsoup4 lxml
+          test -s seeds/touristnettr_dmc_domains_clean_2026-07-26.csv
+          python - <<'PY'
+          import csv
+          p = 'seeds/touristnettr_dmc_domains_clean_2026-07-26.csv'
+          with open(p, encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          assert rows, 'Seed file has no rows'
+          assert 'domain' in rows[0], 'Seed file is missing domain column'
+          print(f'Validated {len(rows)} domain rows')
+          PY
 
       - name: Crawl DMC domains
-        id: crawl
-        continue-on-error: true
         run: |
           python scripts/domain_email_extractor.py \
             --input "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv" \
             --run-dir "runs/domain-email/dmc-antalya-clean-2026-07-26" \
-            --max-pages-per-site 8 \
+            --max-pages-per-site 6 \
+            --timeout 12 \
             --stop-after 0 \
             --max-runtime-seconds 19800 \
-            --sleep-seconds 0.4
+            --sleep-seconds 0.3
 
-      - name: Commit checkpoint and outputs
+      - name: Commit outputs with retry
         if: always()
         run: |
+          OUT="runs/domain-email/dmc-antalya-clean-2026-07-26"
+          test -d "$OUT" || { echo "Output directory was not created"; exit 1; }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "runs/domain-email/dmc-antalya-clean-2026-07-26" || true
+          git add "$OUT"
           if git diff --cached --quiet; then
-            echo "No crawler output changes to commit."
-          else
-            git commit -m "Add clean DMC domain crawl results"
-            git push
+            echo "No output changes to commit."
+            exit 0
           fi
+          git commit -m "Add clean DMC domain crawl results"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              echo "Output pushed successfully."
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; retrying..."
+            sleep $((attempt * 5))
+          done
+          echo "Could not push output after retries."
+          exit 1
 
       - name: Upload crawler artifact
         if: always()
@@ -66,4 +93,4 @@ jobs:
             runs/domain-email/dmc-antalya-clean-2026-07-26/all_results.csv
             runs/domain-email/dmc-antalya-clean-2026-07-26/emails_found.csv
             runs/domain-email/dmc-antalya-clean-2026-07-26/checkpoint.json
-          if-no-files-found: warn
+          if-no-files-found: error
