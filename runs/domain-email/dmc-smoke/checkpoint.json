@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-07-26T06:33:29Z",
+  "input_file": "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv",
+  "run_dir": "runs/domain-email/dmc-smoke",
+  "total_input_unique_domains": 151,
+  "processed_total": 2,
+  "remaining_estimate": 149,
+  "done_this_run": 2,
+  "found_this_run": 2,
+  "skipped_resume": 0,
+  "last_domain": "ancetour.com",
+  "last_status": "found"
+}
