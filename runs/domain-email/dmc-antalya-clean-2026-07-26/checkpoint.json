@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-07-26T06:46:28Z",
+  "input_file": "seeds/touristnettr_dmc_domains_clean_2026-07-26.csv",
+  "run_dir": "runs/domain-email/dmc-antalya-clean-2026-07-26",
+  "total_input_unique_domains": 151,
+  "processed_total": 151,
+  "remaining_estimate": 0,
+  "done_this_run": 151,
+  "found_this_run": 105,
+  "skipped_resume": 0,
+  "last_domain": "antalyayachtrent.com",
+  "last_status": "found"
+}
