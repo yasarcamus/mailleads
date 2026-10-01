@@ -1,0 +1,84 @@
+name: TouristNetTR Domain Email Batch
+
+on:
+  push:
+    paths:
+      - "triggers/domain-email-batch/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+concurrency:
+  group: touristnettr-domain-email-batch
+  cancel-in-progress: false
+
+jobs:
+  crawl-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Read latest trigger
+        id: trig
+        run: |
+          TRIG=$(ls -1 triggers/domain-email-batch/*.txt | sort | tail -1)
+          echo "Trigger: $TRIG"
+          SEED=$(grep '^seed=' "$TRIG" | cut -d= -f2-)
+          RUN_DIR=$(grep '^run_dir=' "$TRIG" | cut -d= -f2-)
+          test -s "$SEED" || { echo "Seed file missing: $SEED"; exit 1; }
+          echo "seed=$SEED" >> "$GITHUB_OUTPUT"
+          echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Crawl domains
+        continue-on-error: true
+        run: |
+          python scripts/domain_email_extractor.py \
+            --input "${{ steps.trig.outputs.seed }}" \
+            --run-dir "${{ steps.trig.outputs.run_dir }}" \
+            --max-pages-per-site 6 \
+            --timeout 12 \
+            --stop-after 0 \
+            --max-runtime-seconds 19800 \
+            --sleep-seconds 0.3
+
+      - name: Commit outputs with retry
+        if: always()
+        run: |
+          OUT="${{ steps.trig.outputs.run_dir }}"
+          test -d "$OUT" || { echo "Output directory was not created"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT"
+          if git diff --cached --quiet; then
+            echo "No output changes to commit."
+            exit 0
+          fi
+          git commit -m "Add domain email batch results: $OUT"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              echo "Output pushed successfully."
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; retrying..."
+            sleep $((attempt * 5))
+          done
+          echo "Could not push output after retries."
+          exit 1
