@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-10-01T13:13:34Z",
+  "input_file": "seeds/batch/de_acente_2026-10-01.csv",
+  "run_dir": "runs/domain-email/de-acente-2026-10-01",
+  "total_input_unique_domains": 57,
+  "processed_total": 57,
+  "remaining_estimate": 0,
+  "done_this_run": 57,
+  "found_this_run": 15,
+  "skipped_resume": 0,
+  "last_domain": "mollisreisen.de",
+  "last_status": "found"
+}
