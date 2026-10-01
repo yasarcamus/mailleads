@@ -1,0 +1,2 @@
+seed=seeds/batch/de_acente_2026-10-01.csv
+run_dir=runs/domain-email/de-acente-2026-10-01
